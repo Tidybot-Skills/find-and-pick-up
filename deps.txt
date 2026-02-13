@@ -1,0 +1,2 @@
+center-object
+pick-up-object
