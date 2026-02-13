@@ -98,6 +98,9 @@ def center_object(
             log(f"[center] FAILED - Object not found after search")
             return False, None
     
+    consecutive_misses = 0
+    wiggle_step = 0.02  # 2cm
+    
     for iteration in range(max_iterations):
         result = yolo.segment_camera(target, camera_id=camera_id, confidence=0.15)
         
@@ -108,9 +111,21 @@ def center_object(
                 break
         
         if target_det is None:
-            log(f"[center] Iter {iteration}: No '{target}' detected")
+            consecutive_misses += 1
+            log(f"[center] Iter {iteration}: No '{target}' detected ({consecutive_misses}/10)")
+            
+            if consecutive_misses >= 10:
+                log(f"[center] FAILED - 10 consecutive detection failures")
+                return False, None
+            
+            dx = wiggle_step * (1 if consecutive_misses % 2 == 0 else -1)
+            dy = wiggle_step * (1 if (consecutive_misses // 2) % 2 == 0 else -1)
+            log(f"[center] Wiggling base: dx={dx:.3f}m, dy={dy:.3f}m")
+            base.move_delta(dx=dx, dy=dy)
             time.sleep(0.3)
             continue
+        
+        consecutive_misses = 0
         
         x1, y1, x2, y2 = target_det.bbox
         u, v = (x1 + x2) / 2, (y1 + y2) / 2
