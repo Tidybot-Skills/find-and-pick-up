@@ -245,6 +245,44 @@ def get_object_pixel_center(detection):
     return (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
 
+def get_mask_orientation(detection):
+    """Get object orientation angle from mask using PCA.
+    
+    Returns angle in radians for EE yaw rotation to align gripper PERPENDICULAR 
+    to object's long axis (for grasping across the object).
+    Clamped to ±90° to avoid joint limits.
+    """
+    if detection.mask is None:
+        return 0.0
+    
+    mask = detection.mask
+    binary = (mask > 0.5).astype(np.float32)
+    ys, xs = np.where(binary > 0)
+    
+    if len(xs) < 10:
+        return 0.0
+    
+    cx, cy = xs.mean(), ys.mean()
+    xs_c, ys_c = xs - cx, ys - cy
+    
+    cov_xx = np.mean(xs_c * xs_c)
+    cov_yy = np.mean(ys_c * ys_c)
+    cov_xy = np.mean(xs_c * ys_c)
+    
+    theta = 0.5 * np.arctan2(2 * cov_xy, cov_xx - cov_yy)
+    theta_perp = theta + math.pi / 2
+    
+    while theta_perp > math.pi:
+        theta_perp -= 2 * math.pi
+    while theta_perp < -math.pi:
+        theta_perp += 2 * math.pi
+    
+    max_angle = math.pi / 2
+    theta_perp = max(-max_angle, min(max_angle, theta_perp))
+    
+    return -theta_perp
+
+
 def get_servo_target_pixel(image_shape, ee_z):
     h, w = image_shape[0], image_shape[1]
     if ee_z >= OFFSET_START_Z:
@@ -286,6 +324,7 @@ def search_wiggle(target):
 def servo_descend(target):
     ee_x, ee_y, ee_z = sensors.get_ee_position()
     consecutive_failures = 0
+    aligned_to_object = False
     
     print(f"\n--- Servo-Descend: approaching '{target}' ---")
     display.show_text(f"Approaching {target}...")
@@ -294,6 +333,19 @@ def servo_descend(target):
     for i in range(MAX_SERVO_ITERATIONS):
         ee_x, ee_y, ee_z = sensors.get_ee_position()
         use_ee_frame = ee_z < EE_FRAME_Z_THRESHOLD
+        
+        # Align gripper with object orientation when crossing EE frame threshold
+        if use_ee_frame and not aligned_to_object:
+            det_for_align, _ = detect_object_2d(target)
+            if det_for_align is not None:
+                orient_angle = get_mask_orientation(det_for_align)
+                if abs(orient_angle) > 0.05:
+                    print(f"    Aligning gripper to object: rotating {math.degrees(orient_angle):.1f}°")
+                    arm.move_delta(dyaw=orient_angle, frame="ee", duration=0.5)
+                    time.sleep(0.3)
+                else:
+                    print(f"    Object orientation ~0°, no rotation needed")
+            aligned_to_object = True
         
         det, shape = detect_object_2d(target)
         if det is None:
